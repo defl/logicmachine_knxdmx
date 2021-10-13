@@ -7,9 +7,12 @@ module('DMX', package.seeall)
 
 
 local knxdmx_defaults = {
+  update_hz            = 10.0,  -- Amount of loops per second, more than 15 doesn't work less than 5 is ugly
+  up_transition_time   =  0.2,  -- Transition time for increased light output in seconds, fast on is often welcome
+ 	down_transition_time =  2.0,  -- Transition time for decreased light output in seconds, longer is nicer
 }
 
- 
+
 --
 -- KNXDMX class
 --
@@ -38,9 +41,7 @@ function KnxDmx:new(params)
   local dmx_channel_id_max = 0
   for _, dmx_channel_ids in pairs(params.knx_dmx_mapping) do
     for _, dmx_channel_id in ipairs(dmx_channel_ids) do
-      if dmx_channel_id > dmx_channel_id_max then
-        dmx_channel_id_max = dmx_channel_id
-      end
+      dmx_channel_id_max = math.max(dmx_channel_id, dmx_channel_id_max)
     end
   end
   log(string.format("DMX:new(): Highest DMX channel id %s", dmx_channel_id_max))
@@ -65,10 +66,17 @@ function KnxDmx:new(params)
     end
   end
 
-  -- Sleep
-  self.transition_sleep = 1.0 / self.params.transition_update_hz
-  log(string.format("DMX:new(): When transitioning sleeping %s sec/iteration", self.transition_sleep))
+  self.transitioning_channels = {}
 
+  -- Sleep
+  self.sleep_time = 1.0 / self.params.update_hz
+  log(string.format("DMX:new(): Sleep time %ss", self.sleep_time))
+
+  -- Ticks
+  self.up_transition_ticks   = math.max(1, math.floor(self.params.up_transition_time * self.params.update_hz))
+  self.down_transition_ticks = math.max(1, math.floor(self.params.down_transition_time * self.params.update_hz))
+  log(string.format("DMX:new(): Ticks up %s, down %s", self.up_transition_ticks, self.down_transition_ticks))
+  
   -- Connect to redis and clean out queue
   _, self.redis = pcall(require('redis').connect) 
   self.redis:ltrim("knxdmx", 1, 0)
@@ -82,78 +90,83 @@ end
 --
 function KnxDmx:loop()
 
-  -- Get update
-  -- TODO: drain all updates
-  local has_update = false
-  local data = self.redis:lpop("knxdmx_updates")
-  if data ~= nil then
+  -- Get single update per loop
+  while true do
+    local data = self.redis:lpop("knxdmx_updates")
+    if data ~= nil then
 
-    --log(string.format("KnxDmx:loop(): %s", data))
-    
-    local s = string.split(data, "_")
-    local knx_address = s[1]
-    local knx_value = tonumber(s[2]) or 0
-    
-    --log(string.format("KnxDmx:loop(): KNX %s to %s", knx_address, knx_value))
-    
+      -- Decode the knx address and number
+      local s = string.split(data, "_")
+      local knx_address = s[1]
+      local knx_value = tonumber(s[2]) or 0
 
-    local dmx_channel_ids = self.params.knx_dmx_mapping[knx_address]
-    if dmx_channel_ids ~= nil then
-      for i, dmx_channel_id in ipairs(dmx_channel_ids) do
-      
-        -- 0-100% to 0-254 (TODO: note that garden light dimmers don't like 255 so can't use round()?!?!?)
-        local dmx_value_to = math.floor(knx_value * 2.55)
+      -- Update all related DMX channels
+      local dmx_channel_ids = self.params.knx_dmx_mapping[knx_address]
+      if dmx_channel_ids ~= nil then
+        for i, dmx_channel_id in ipairs(dmx_channel_ids) do
+          
+          local data = self.dmx_channels[dmx_channel_id]
+          
+          local dmx_value_from = data.target
+          local dmx_value_to = math.floor((knx_value * 2.55) + 0.5) -- 0-100% to 0-255
+          --log(string.format("KnxDmx:loop(): DMX %s requested move %s->%s", dmx_channel_id, dmx_value_from, dmx_value_to))
 
-        local dmx_value_from = self.dmx_channels[dmx_channel_id].target
+          -- Up/down differ
+          local ticks = 0
+          if dmx_value_to > dmx_value_from then
+            ticks = self.up_transition_ticks
 
-        log(string.format("KnxDmx:loop(): DMX %s to %s->%s", dmx_channel_id, dmx_value_from, dmx_value_to))
-        
-        -- we brighten fast
-        if dmx_value_to > dmx_value_from then
+          elseif dmx_value_to < dmx_value_from then
+            ticks = self.down_transition_ticks
+          end
 
-        	self.dmx_channels[dmx_channel_id].target = dmx_value_to
-        	self.dmx_channels[dmx_channel_id].delta = (self.dmx_channels[dmx_channel_id].target - self.dmx_channels[dmx_channel_id].current)
-        	self.dmx_channels[dmx_channel_id].ticks = 1    
+          -- Do we need to do anything?
+          if ticks > 0 then
 
-        -- dim slowly
-        elseif dmx_value_to < dmx_value_from then
+            --log(string.format("KnxDmx:loop(): DMX %s updating %s->%s in %s ticks", dmx_channel_id, dmx_value_from, dmx_value_to, ticks))
 
-        	self.dmx_channels[dmx_channel_id].target = dmx_value_to
-        	self.dmx_channels[dmx_channel_id].delta = (self.dmx_channels[dmx_channel_id].target - self.dmx_channels[dmx_channel_id].current) / 20
-        	self.dmx_channels[dmx_channel_id].ticks = 20
-        end        
-        
+            -- Update channel
+            data.target = dmx_value_to
+            data.delta = (data.target - data.current) / ticks
+            data.ticks = ticks
+
+            -- Add to transitioning channels
+            self.transitioning_channels[dmx_channel_id] = data
+          end
+        end
       end
+      
+    -- No more data, stop waiting for it
+    else
+      break
     end
     
-    has_update = true
+    -- You can put a small wait here for more set_knx() data points to arrive, this will make the first
+    -- action to take longer (~second in total for 5 channels) but it will feel smoother as all move at the
+    -- same time. I prefer my lights to be on faster and hence I don't do this.
+    -- os.wait(0.2)    
   end
 
-  -- Update all channels
-  local is_transitioning = false
-  for dmx_channel_id, data in pairs(self.dmx_channels) do
-
-    -- Transition
-    if data.ticks > 0 then
-         
-      data.ticks = data.ticks - 1
-      data.current = data.target - data.delta * data.ticks
-      log(string.format("KnxDmx:loop(): dmx=%s tick=%s current=%s delta=%s target=%s", dmx_channel_id, data.ticks, data.current, data.delta, data.target))
-      
-      self.luadmx:setchannel(dmx_channel_id, data.current)
-
-      is_transitioning = true  -- Not true for last one, but don't care
-    end
-	end
+  -- Update transitioning channels
+  for dmx_channel_id, data in pairs(self.transitioning_channels) do
     
+    data.ticks = data.ticks - 1
+    data.current = data.target - data.delta * data.ticks
+    --log(string.format("KnxDmx:loop(): dmx=%s tick=%s current=%s delta=%s target=%s", dmx_channel_id, data.ticks, data.current, data.delta, data.target))
+      
+    self.luadmx:setchannel(dmx_channel_id, data.current)
+    
+    -- When done auto-remove ourselves (this is safe), else mark as transitioning
+    if data.ticks == 0 then
+      self.transitioning_channels[dmx_channel_id] = nil
+      --log(string.format("KnxDmx:loop(): DMX %s update done", dmx_channel_id))
+    end
+  end
+  
+  -- Send DMX
   self.luadmx:send()
   
-  -- If we are transitioning, sleep shortly else sleep for more human time
-  if is_transitioning then
-    os.sleep(self.transition_sleep)
-  else
-    os.sleep(0.2)
-  end
+  os.sleep(self.sleep_time)
 end
 
 
@@ -163,9 +176,8 @@ end
 --
 function KnxDmx:set_knx(knx_channel, value)
 
-  -- TODO: Should be able to use table 
+  -- TODO: Should be able to use table but could not get it to work
   local data = string.format("%s_%s", knx_channel, value)
-  log(string.format("KnxDmx:set_knx(): %s to %s: %s", knx_channel, value, data))
   
   -- Storage is a redis store under the hood, push an update
   storage.exec('rpush', "knxdmx_updates", data)
