@@ -9,7 +9,7 @@ module('DMX', package.seeall)
 local knxdmx_defaults = {
   update_hz            = 10.0,  -- Amount of loops per second, more than 15 doesn't work less than 5 is ugly
   up_transition_time   =  0.2,  -- Transition time for increased light output in seconds, fast on is often welcome
- 	down_transition_time =  2.0,  -- Transition time for decreased light output in seconds, longer is nicer
+  down_transition_time =  2.0,  -- Transition time for decreased light output in seconds, longer is nicer
 }
 
 
