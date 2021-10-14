@@ -7,7 +7,7 @@ LogicMachines are widely used in KNX installations when you need more complexity
 KNX logic blocks of devices can provide; they offer Blocks/Lua scripting and IO options which can be combined
 to build things such as KNX-DMX gateways.
 
-EmbeddedSytems provides a sample DMX gateway implementation in their manuals and [online](https://openrb.com/example-dmx-lighting-control-with-lm2/) but that has various problems such as:
+EmbeddedSytems provides a sample DMX gateway implementation in their manuals and [online](https://openrb.com/example-dmx-lighting-control-with-lm2/) but that has various rough edges I didn't like:
 
 - It has a delay of up to a second which makes it feel unresponsive
 - Requires KNX addressing to match DMX addressing
