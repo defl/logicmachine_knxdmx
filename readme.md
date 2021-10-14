@@ -11,7 +11,7 @@ EmbeddedSytems provides a sample DMX gateway implementation in their manuals and
 
 - It has a delay of up to a second which makes it feel unresponsive
 - Requires KNX addressing to match DMX addressing
-- It does not support assymetric on/off timings
+- It does not support asymmetric  on/off timings
 - It's hard to read and uses undocumented non-public API trickery
 
 Because I was in need of a DMX gateway that worked, and I use a LM5 Lite already which I'm happy with in terms of stability, 
