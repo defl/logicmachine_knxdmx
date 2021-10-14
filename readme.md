@@ -24,7 +24,6 @@ Pro:
 Con:
 - LogicMachine takes time to process and send the DMX packets, you'll not get as nice transitions as you can with a dedicated device
 
-
 ## Installation
 In the LogicMachine GUI website go to "LogicMachine" -> "Scripting" and add a script in the following classes:
  - Event-based -> Add new script 
@@ -55,7 +54,6 @@ Done, let there be light.
 - Using string to transfer data pairs which I suspect takes more time than expected
 - Not using wall-clock for transitions
 
-
 ## Background
 At the time of writing most of the lights in my house are based off of DMX drivers (~128 channels in use).
 There are multiple DMX lines which all come together centrally at a single DMX replicator unit. 
@@ -72,3 +70,6 @@ I have used a Bab Technologie DUODMX gateway 12021 KNX for a year and found the 
 At the time of writing there are no other cost-efficient ~128 channel gateways. I can start splitting up the DMX domain into
 multiple smaller ones driven by smaller KNXDMX gateways such as the Weinzierl 544 (up to 64ch) but not looking forward
 to debugging these.
+
+## References
+This is based on the published EmbeddedSystems code from https://openrb.com/example-dmx-lighting-control-with-lm2/
