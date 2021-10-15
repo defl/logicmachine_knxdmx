@@ -54,7 +54,7 @@ function KnxDmx:new(params)
   end
   log("DMX:new(): luaDMX opened port successfully")
  
-  self.luadmx:setcount(dmx_channel_id_max)
+  self.luadmx:setcount(dmx_channel_id_max+3)  -- This is needed because of bug in underlying DMX lib, else it won't steer higher addresses
   self.luadmx:setall(0)
   self.luadmx:send()
 
@@ -152,8 +152,9 @@ function KnxDmx:loop()
     
     data.ticks = data.ticks - 1
     data.current = data.target - data.delta * data.ticks
-    --log(string.format("KnxDmx:loop(): dmx=%s tick=%s current=%s delta=%s target=%s", dmx_channel_id, data.ticks, data.current, data.delta, data.target))
-      
+
+    -- log(string.format("KnxDmx:loop(): dmx=%s tick=%s current=%s delta=%s target=%s", dmx_channel_id, data.ticks, data.current, data.delta, data.target))
+
     self.luadmx:setchannel(dmx_channel_id, data.current)
     
     -- When done auto-remove ourselves (this is safe), else mark as transitioning
