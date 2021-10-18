@@ -52,7 +52,7 @@ Now go to your objects and tag every KNX group that needs to trigger a DMX chann
 Done, let there be light.
 
 ## TODO
-- Uses a hardcoded storage key "knxdmx_updates"
+- Uses a hardcoded storage key
 - Using string to transfer data pairs which I suspect takes more time than expected
 - Not using wall-clock for transitions
 
