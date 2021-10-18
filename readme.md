@@ -10,6 +10,7 @@ to build things such as KNX-DMX gateways.
 EmbeddedSytems provides a sample DMX gateway implementation in their manuals and [online](https://openrb.com/example-dmx-lighting-control-with-lm2/) but that has various rough edges I didn't like:
 
 - It has a delay of up to a second which makes it feel unresponsive
+- It does not feed back to KNX between brightness and state
 - Requires KNX addressing to match DMX addressing
 - It does not support asymmetric  on/off timings
 - It's hard to read and uses undocumented non-public API trickery
@@ -20,6 +21,7 @@ I decided to improve upon the DMX scripts to make them suit my needs better and 
 Pro:
 - It's faster than the script in the manual
 - Flexible config of 1 KNX group to multiple DMX channels
+- Other devices listening to the KNX bus see the state updates as the lights change
 
 Con:
 - LogicMachine takes time to process and send the DMX packets, you'll not get as nice transitions as you can with a dedicated device
