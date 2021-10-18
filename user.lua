@@ -66,7 +66,7 @@ function KnxDmx:new(params)
       -- DMX find max channel and init channel data
       for _, dmx_channel_id in ipairs(data.dmx) do
         dmx_channel_id_max = math.max(dmx_channel_id, dmx_channel_id_max)
-        self.dmx_channels[ dmx_channel_id ] = { current=0, target=0, ticks=0, delta=0, knx_dmx_mapping=data }
+        self.dmx_channels[ dmx_channel_id ] = { current=0, target=0, ticks=0, delta=0 }
       end
     
       -- Store this record in lookups for on_off and brightness
@@ -85,7 +85,7 @@ function KnxDmx:new(params)
     os.sleep(1)
     error(err)
   end
-  log("DMX:new(): luaDMX opened port successfully")
+  log(string.format("DMX:new(): luaDMX opened port \"%s\" successfully", self.params.dmx_port))
  
   self.luadmx:setcount(dmx_channel_id_max+3)  -- This is needed because of bug in underlying DMX lib, else it won't steer higher addresses
   self.luadmx:setall(0)
@@ -104,7 +104,7 @@ function KnxDmx:new(params)
   -- This is similar to the storage API but with a persistant connection for performance
   _, self.redis = pcall(require('redis').connect) 
   self.redis:ltrim(STORAGE_KEY, 1, 0)
-  log(string.format("DMX:new(): Ready to light up your life, (storage key \"%s\")", STORAGE_KEY))
+  log(string.format("DMX:new(): Ready to light up your life! (storage key \"%s\")", STORAGE_KEY))
 
   return o
 end
@@ -136,6 +136,13 @@ function KnxDmx:loop()
         end
         
         self:dmx_update_channels(data.dmx, dmx_value_to)
+        
+        -- TODO: We can push this to a queue, only to be processed on idle. Not sure if that's slower.
+        if dmx_value_to > 0 then
+          grp.checkwrite(data.knx_on_off, true)
+        else
+          grp.checkwrite(data.knx_on_off, false)
+        end
       end
 
       -- TODO: Respond to on/off as well?
@@ -165,14 +172,6 @@ function KnxDmx:loop()
     if data.ticks == 0 then
       self.transitioning_channels[dmx_channel_id] = nil
       --log(string.format("KnxDmx:loop(): DMX %s update done", dmx_channel_id))
-      
-      -- Update KNX
-      if data.current > 0 then
-        grp.checkwrite(data.knx_dmx_mapping.knx_on_off, true)
-      else
-        grp.checkwrite(data.knx_dmx_mapping.knx_on_off, false)
-      end
-      
     end
   end
   
