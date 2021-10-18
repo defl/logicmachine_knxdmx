@@ -12,6 +12,8 @@ local knxdmx_defaults = {
   down_transition_time =  2.0,  -- Transition time for decreased light output in seconds, longer is nicer
 }
 
+local STORAGE_KEY = 'knxdmx'
+
 
 --
 -- KNXDMX class
@@ -25,6 +27,8 @@ local KnxDmx = {}
 --
 function KnxDmx:new(params)
   
+  log(string.format("DMX:new(): Rebuilding KNX-DMX light state..."))
+  
   o = {}
   setmetatable(o, self)
   self.__index = self
@@ -37,14 +41,43 @@ function KnxDmx:new(params)
     end
   end
  
-  -- Find maximum number of channels
+  -- Process DMX-KNX config, build lookup maps, check for dupes
+  self.knx_on_off_map = {}
+  self.knx_brightness_map = {}
+  self.dmx_channels = {}
+  self.transitioning_channels = {}
   local dmx_channel_id_max = 0
-  for _, dmx_channel_ids in pairs(params.knx_dmx_mapping) do
-    for _, dmx_channel_id in ipairs(dmx_channel_ids) do
-      dmx_channel_id_max = math.max(dmx_channel_id, dmx_channel_id_max)
-    end
+  for _, data in pairs(params.knx_dmx_mapping) do
+    
+      -- Check for dupe config errors
+      if self.knx_on_off_map[data.knx_on_off] ~= nil then
+        error(string.format("DMX:new(): knx_on_off address %s already defined earlier in knx_on_off", data.knx_on_off))
+      end
+      if self.knx_brightness_map[data.knx_on_off] ~= nil then
+        error(string.format("DMX:new(): knx_on_off address %s already defined earlier in knx_brightness", data.knx_on_off))
+      end
+      if self.knx_on_off_map[data.knx_brightness] ~= nil then
+        error(string.format("DMX:new(): knx_brightness address %s already defined earlier in knx_on_off", data.knx_brightness))
+      end
+      if self.knx_brightness_map[data.knx_brightness] ~= nil then
+        error(string.format("DMX:new(): knx_brightness address %s already defined earlier in knx_brightness", data.knx_brightness))
+      end
+
+      -- DMX find max channel and init channel data
+      for _, dmx_channel_id in ipairs(data.dmx) do
+        dmx_channel_id_max = math.max(dmx_channel_id, dmx_channel_id_max)
+        self.dmx_channels[ dmx_channel_id ] = { current=0, target=0, ticks=0, delta=0, knx_dmx_mapping=data }
+      end
+    
+      -- Store this record in lookups for on_off and brightness
+      self.knx_on_off_map[data.knx_on_off] = data
+      self.knx_brightness_map[data.knx_brightness] = data
+    
+      -- Write KNX state to all off (force)
+      grp.write(data.knx_on_off, false)
+      grp.write(data.knx_brightness, 0)
   end
-  log(string.format("DMX:new(): Highest DMX channel id %s", dmx_channel_id_max))
+  log(string.format("DMX:new(): Reset all KNX state, highest DMX channel id %s, %s DMX channels", dmx_channel_id_max, #self.dmx_channels))
   
   -- Open and configure luaDMX 
   self.luadmx, err = luadmx.open(self.params.dmx_port)
@@ -58,16 +91,6 @@ function KnxDmx:new(params)
   self.luadmx:setall(0)
   self.luadmx:send()
 
-  -- Rebuild dmx channel map structure to zero
-  self.dmx_channels = {}
-  for _, dmx_channel_ids in pairs(params.knx_dmx_mapping) do
-    for _, dmx_channel_id in ipairs(dmx_channel_ids) do   
-      self.dmx_channels[ dmx_channel_id ] = { current=0, target=0, ticks=0, delta=0 }
-    end
-  end
-
-  self.transitioning_channels = {}
-
   -- Sleep
   self.sleep_time = 1.0 / self.params.update_hz
   log(string.format("DMX:new(): Sleep time %ss", self.sleep_time))
@@ -77,10 +100,12 @@ function KnxDmx:new(params)
   self.down_transition_ticks = math.max(1, math.floor(self.params.down_transition_time * self.params.update_hz))
   log(string.format("DMX:new(): Ticks up %s, down %s", self.up_transition_ticks, self.down_transition_ticks))
   
-  -- Connect to redis and clean out queue
+  -- Connect to redis and clean out queue. 
+  -- This is similar to the storage API but with a persistant connection for performance
   _, self.redis = pcall(require('redis').connect) 
-  self.redis:ltrim("knxdmx", 1, 0)
-    
+  self.redis:ltrim(STORAGE_KEY, 1, 0)
+  log(string.format("DMX:new(): Ready to light up your life, (storage key \"%s\")", STORAGE_KEY))
+
   return o
 end
 
@@ -92,49 +117,28 @@ function KnxDmx:loop()
 
   -- Get single update per loop
   while true do
-    local data = self.redis:lpop("knxdmx_updates")
+    local data = self.redis:lpop(STORAGE_KEY)
     if data ~= nil then
 
       -- Decode the knx address and number
       local s = string.split(data, "_")
-      local knx_address = s[1]
+      local knx_group_address = s[1]
       local knx_value = tonumber(s[2]) or 0
 
-      -- Update all related DMX channels
-      local dmx_channel_ids = self.params.knx_dmx_mapping[knx_address]
-      if dmx_channel_ids ~= nil then
-        for i, dmx_channel_id in ipairs(dmx_channel_ids) do
-          
-          local data = self.dmx_channels[dmx_channel_id]
-          
-          local dmx_value_from = data.target
-          local dmx_value_to = math.floor((knx_value * 2.55) + 0.5) -- 0-100% to 0-255
-          --log(string.format("KnxDmx:loop(): DMX %s requested move %s->%s", dmx_channel_id, dmx_value_from, dmx_value_to))
-
-          -- Up/down differ
-          local ticks = 0
-          if dmx_value_to > dmx_value_from then
-            ticks = self.up_transition_ticks
-
-          elseif dmx_value_to < dmx_value_from then
-            ticks = self.down_transition_ticks
-          end
-
-          -- Do we need to do anything?
-          if ticks > 0 then
-
-            --log(string.format("KnxDmx:loop(): DMX %s updating %s->%s in %s ticks", dmx_channel_id, dmx_value_from, dmx_value_to, ticks))
-
-            -- Update channel
-            data.target = dmx_value_to
-            data.delta = (data.target - data.current) / ticks
-            data.ticks = ticks
-
-            -- Add to transitioning channels
-            self.transitioning_channels[dmx_channel_id] = data
-          end
+      -- Find as brightness
+      local data = self.knx_brightness_map[knx_group_address]
+      if data ~= nil then
+        
+        -- Update DMX
+        local dmx_value_to = math.floor((knx_value * 2.55) + 0.5) -- 0-100% to 0-255
+        if dmx_value_to < 0 or dmx_value_to > 255 then
+          error(string.format("KnxDmx:loop(): dmx=%s attempt to update to invalid value %s", dmx_channel_id, dmx_value_to))
         end
+        
+        self:dmx_update_channels(data.dmx, dmx_value_to)
       end
+
+      -- TODO: Respond to on/off as well?
       
     -- No more data, stop waiting for it
     else
@@ -152,15 +156,23 @@ function KnxDmx:loop()
     
     data.ticks = data.ticks - 1
     data.current = data.target - data.delta * data.ticks
-
-    -- log(string.format("KnxDmx:loop(): dmx=%s tick=%s current=%s delta=%s target=%s", dmx_channel_id, data.ticks, data.current, data.delta, data.target))
-
+    
+    --log(string.format("KnxDmx:loop(): dmx=%s tick=%s current=%s delta=%s target=%s", dmx_channel_id, data.ticks, data.current, data.delta, data.target))
+      
     self.luadmx:setchannel(dmx_channel_id, data.current)
     
     -- When done auto-remove ourselves (this is safe), else mark as transitioning
     if data.ticks == 0 then
       self.transitioning_channels[dmx_channel_id] = nil
       --log(string.format("KnxDmx:loop(): DMX %s update done", dmx_channel_id))
+      
+      -- Update KNX
+      if data.current > 0 then
+        grp.checkwrite(data.knx_dmx_mapping.knx_on_off, true)
+      else
+        grp.checkwrite(data.knx_dmx_mapping.knx_on_off, false)
+      end
+      
     end
   end
   
@@ -170,18 +182,62 @@ function KnxDmx:loop()
   os.sleep(self.sleep_time)
 end
 
+  
+--
+-- Loop is called in the resident script at interval 0
+--
+-- @param dmx_channel_ids: Table of channel ids as number
+-- @param dmx_value_to: DMX target value [0-255]
+--
+function KnxDmx:dmx_update_channels(dmx_channel_ids, dmx_value_to)
+    
+  for i, dmx_channel_id in ipairs(dmx_channel_ids) do
+
+    local data = self.dmx_channels[dmx_channel_id]
+
+    local dmx_value_from = data.target
+    --log(string.format("KnxDmx:dmx_update_channels(): DMX %s requested move %s->%s", dmx_channel_id, dmx_value_from, dmx_value_to))
+
+    -- Up/down differ
+    local ticks = 0
+    if dmx_value_to > dmx_value_from then
+      ticks = self.up_transition_ticks
+
+    elseif dmx_value_to < dmx_value_from then
+      ticks = self.down_transition_ticks
+    end
+
+    -- Do we need to do anything?
+    if ticks > 0 then
+
+      --log(string.format("KnxDmx:dmx_update_channels(): DMX %s updating %s->%s in %s ticks", dmx_channel_id, dmx_value_from, dmx_value_to, ticks))
+
+      -- Update channel
+      data.target = dmx_value_to
+      data.delta = (data.target - data.current) / ticks
+      data.ticks = ticks
+
+      -- Add to transitioning channels
+      self.transitioning_channels[dmx_channel_id] = data
+    end
+  end
+end  
+
 
 --
 -- Set the KNX lighting value
 -- This is a static or class function, cannot use self here
 --
-function KnxDmx:set_knx(knx_channel, value)
+-- @param knx_group_address: KNX group address as string (ex. "1/2/3")
+-- @param value: Value to set to, depends on type, expected is 0-100 for brightness
+--
+function KnxDmx:set_knx(knx_group_address, value)
 
   -- TODO: Should be able to use table but could not get it to work
-  local data = string.format("%s_%s", knx_channel, value)
+  local data = string.format("%s_%s", knx_group_address, value)
   
   -- Storage is a redis store under the hood, push an update
-  storage.exec('rpush', "knxdmx_updates", data)
+  storage.exec('rpush', STORAGE_KEY, data)
 end
 
 
