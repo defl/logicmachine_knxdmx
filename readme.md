@@ -71,7 +71,7 @@ I have used a Bab Technologie DUODMX gateway 12021 KNX for a year and found the 
 
 At the time of writing there are no other cost-efficient ~128 channel gateways. I can start splitting up the DMX domain into
 multiple smaller ones driven by smaller KNXDMX gateways such as the Weinzierl 544 (up to 64ch) but not looking forward
-to debugging these.
+to debugging these. So time to pull out the editor and play a bit with Lua...
 
 ## References
 This is based on the published EmbeddedSystems code from https://openrb.com/example-dmx-lighting-control-with-lm2/
