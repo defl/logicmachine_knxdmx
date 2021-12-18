@@ -8,7 +8,7 @@
 KnxDmx = require('user.knxdmx')
 
 -- Set value
-if event.type ~= 'groupwrite' then
+if event.type == 'groupwrite' then
   KnxDmx:set_knx(event.dst, event.getvalue())
 end
 
