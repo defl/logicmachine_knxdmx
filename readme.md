@@ -30,7 +30,7 @@ Con:
 In the LogicMachine GUI website go to "LogicMachine" -> "Scripting" and add a script in the following classes:
  - Event-based -> Add new script 
    - I named it "KnxDmx" but it does not matter, and add a tag, I use DMX. 
-   - Do not execute on group read. 
+   - Check execute on group read, script supports returning values
    - Save.
    - Click editor icon for script and copy code from "event.lua" into editor. 
    - Save.
